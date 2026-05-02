@@ -1,6 +1,8 @@
 import os
 import json
 import requests
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logging_middleware import Log
 
 # Locate the token.json file at the root of the project
@@ -9,22 +11,16 @@ TOKEN_FILE = os.path.join(BASE_DIR, 'token.json')
 NOTIFICATIONS_API_URL = "http://20.207.122.201/evaluation-service/notifications"
 
 def fetch_notifications():
-    """
-    Fetches the raw list of notifications from the Evaluation Server API.
-    Uses the mandatory logging middleware to track the request lifecycle.
-    """
     try:
         if not os.path.exists(TOKEN_FILE):
-            Log("backend", "error", "api", "Token file missing. Cannot fetch notifications.")
-            return []
+            return [], f"Token file missing at {TOKEN_FILE}"
 
         with open(TOKEN_FILE, 'r') as f:
             token_data = json.load(f)
             token = token_data.get('access_token')
 
         if not token:
-            Log("backend", "error", "api", "Access token missing from token.json")
-            return []
+            return [], "Access token missing from token.json"
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -40,11 +36,13 @@ def fetch_notifications():
             data = response.json()
             notifications = data.get("notifications", [])
             Log("backend", "info", "api", f"Successfully fetched {len(notifications)} notifications")
-            return notifications
+            return notifications, None
         else:
-            Log("backend", "error", "api", f"Failed to fetch notifications. Status: {response.status_code}")
-            return []
+            err = f"Failed to fetch notifications. Status: {response.status_code}, Body: {response.text}"
+            Log("backend", "error", "api", err)
+            return [], err
 
     except Exception as e:
-        Log("backend", "fatal", "api", f"Critical error while fetching notifications: {str(e)}")
-        return []
+        err = f"Critical error while fetching notifications: {str(e)}"
+        Log("backend", "fatal", "api", err)
+        return [], err

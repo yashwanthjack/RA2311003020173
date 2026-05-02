@@ -1,3 +1,6 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from fastapi import FastAPI
 from logging_middleware import Log
 from priority_inbox import PriorityInbox
@@ -23,11 +26,11 @@ def get_priority_inbox():
     Log("backend", "info", "route", "Priority inbox endpoint called")
     
     # 1. Fetch raw notifications from the test server
-    raw_notifications = fetch_notifications()
+    raw_notifications, error_msg = fetch_notifications()
     
-    if not raw_notifications:
-        Log("backend", "warn", "route", "No notifications fetched or external API failed")
-        return {"status": "error", "message": "Failed to fetch notifications"}
+    if error_msg:
+        Log("backend", "warn", "route", f"API failed: {error_msg}")
+        return {"status": "error", "message": error_msg}
 
     # 2. Process through our O(log K) Min-Heap algorithm
     inbox = PriorityInbox(max_size=10)
@@ -41,5 +44,5 @@ def get_priority_inbox():
     return {
         "status": "success",
         "count": len(top_10),
-        "data": top_10
+        "notifications": top_10
     }

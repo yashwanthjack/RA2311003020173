@@ -31,6 +31,9 @@ def _send_log(payload, token):
 def Log(stack: str, level: str, package: str, message: str):
     token = get_token()
     
+    # Always print locally for debugging
+    print(f"[LOCAL DBG] [{level.upper()}] {package}: {message}")
+    
     # Fallback to local print if token is missing
     if not token:
         print(f"[{level.upper()}] {package}: {message} (Token missing)")

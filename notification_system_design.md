@@ -282,3 +282,31 @@ function process_email_queue_task(student_id: string, message: string):
     # Send to a Dead Letter Queue for engineering review
     log_to_dead_letter_queue(student_id, message)
 ```
+
+---
+
+## Stage 6
+
+### Priority Inbox Implementation Approach
+
+To maintain a highly efficient Priority Inbox that constantly updates the top `N` notifications (where `N=10`), the solution leverages a **Min-Heap Data Structure**.
+
+**1. Priority Calculation (Weight + Recency):**
+Each notification is assigned a numerical weight based on its type:
+- `Placement` = 3 (Highest Priority)
+- `Result` = 2
+- `Event` = 1 (Lowest Priority)
+
+To handle tie-breakers for notifications of the same weight, a Unix Timestamp is extracted from `createdAt`. A tuple of `(weight, timestamp)` is used for exact comparisons.
+
+**2. Efficiency (Why Min-Heap?):**
+If thousands of notifications stream in, sorting all of them `O(M log M)` is extremely slow. Instead, we use a Min-Heap capped at size `N=10`.
+- **Insertion:** As a new notification arrives, we push it onto the heap. If the heap exceeds 10 items, we immediately pop the *smallest* (lowest priority) item. 
+- **Complexity:** This operation is `O(log K)` per insertion (where `K=10`). Thus, processing a massive stream of incoming notifications has an amortized time complexity of `O(M log 10)`, which is effectively `O(M)` linear time.
+- **Memory:** Memory usage is capped strictly at `O(K)`, never bloating RAM regardless of how many notifications exist.
+
+**3. Application Flow:**
+- We use the `api_client.py` module to securely fetch the notifications via the external test server using standard `Authorization: Bearer` tokens.
+- These are passed sequentially to our `PriorityInbox` class which processes them through the heap.
+- Finally, the array is reversed (`O(K)`) to return the absolute highest priority notifications first to the frontend.
+- The entire pipeline is heavily monitored by our asynchronous `logging_middleware` to ensure any upstream API failures are documented instantly without blocking execution.
