@@ -190,3 +190,95 @@ SET isRead = 1
 WHERE studentId = ? AND isRead = 0;
 ```
 
+---
+
+## Stage 3
+
+### 1. Analysis of the Slow SQL Query
+**Provided Query:**
+```sql
+SELECT * FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC;
+```
+**Is this query accurate?** 
+Functionally, yes, but it is flawed for production:
+- Using `SELECT *` forces the database to read and transfer every single column (including massive text payloads), which consumes unnecessary memory and network bandwidth.
+- `1042` is treated as an integer, but `studentID` might be a string. This causes implicit type casting, which can bypass index usage entirely.
+
+**Why is it slow?**
+The database has grown to 5,000,000 rows. Without a specific composite index covering `studentID`, `isRead`, and `createdAt`, the database is forced to perform a **Full Table Scan** to find the rows, followed by an expensive **Filesort** in memory to order the results by date.
+
+**What to change and computation cost:**
+- **Change:** Replace `SELECT *` with specific columns (`SELECT id, type, message, createdAt`). Ensure `studentID` is properly quoted if it's a string. Create a composite index: `CREATE INDEX idx_student_unread ON notifications(studentID, isRead, createdAt DESC);`
+- **Cost:** With the composite index, the computation cost drops from `O(N)` (scanning 5 million rows) to `O(log N + K)` where `K` is the small number of unread notifications for that specific student. The database fetches the pre-sorted rows directly from the B-Tree index.
+
+### 2. Is adding indexes on every column effective?
+**No, this is terrible advice.** 
+While adding indexes speeds up `SELECT` queries, it severely slows down `INSERT`, `UPDATE`, and `DELETE` operations because the database must recalculate and write to every single index tree whenever data changes. In a notification system with high write-throughput (e.g., massive "Notify All" bursts), over-indexing will crash the database's write performance. You should only index columns frequently used together in `WHERE`, `JOIN`, or `ORDER BY` clauses.
+
+### 3. Query for Recent Placements
+```sql
+SELECT DISTINCT studentId 
+FROM notifications 
+WHERE type = 'Placement' 
+  AND createdAt >= date('now', '-7 days');
+```
+
+---
+
+## Stage 4
+
+### Performance Improvement Strategies
+Fetching notifications on every single page load overwhelms the database. To improve performance and UX, we must decouple page loads from database reads.
+
+1. **Caching the Unread Count (Redis):**
+   - **Solution:** Instead of querying the database for `COUNT(*)` on every page load, store the student's unread count in an in-memory cache like Redis. When a new notification is generated, increment the Redis key. When the user reads it, decrement it.
+   - **Tradeoff:** Extremely fast page loads (O(1) memory read), but introduces cache invalidation complexity (the cache might drift from the true DB state if not managed perfectly).
+
+2. **Client-Side State Management:**
+   - **Solution:** The frontend (e.g., using Redux, React Context) should fetch the notification payload exactly once when the user logs in. Navigating between pages should read from this local memory, avoiding the network entirely.
+   - **Tradeoff:** Zero backend load for navigation, but if the user has multiple tabs open, the state might desync across tabs without a mechanism to share state.
+
+3. **Real-time Push (SSE/WebSockets):**
+   - **Solution:** Rely exclusively on the Server-Sent Events (SSE) mechanism defined in Stage 1 to push updates. The client only updates its local state when the server explicitly pushes a new notification event.
+   - **Tradeoff:** Requires holding open connections on the server, which consumes server memory/ports, but completely eliminates unnecessary HTTP polling.
+
+---
+
+## Stage 5
+
+### Reliability and Scaling (Notify All Redesign)
+
+**Shortcomings of the proposed pseudocode:**
+1. **Synchronous Blocking:** The `for` loop executes sequentially. If the `send_email` API takes 1 second per user, notifying 50,000 students will take almost 14 hours!
+2. **Coupled Failures:** Because `send_email` and `save_to_db` are in the same synchronous block, an external failure in the Email API crashes the script. As indicated by the logs, failing midway means the remaining 49,800 students never get their DB insert or in-app push.
+3. **Missing DB Transactions:** Saving to the DB shouldn't wait for a network request (email) to finish.
+
+**Should DB save and email send happen together?**
+**No.** They operate on entirely different latency scales. Database inserts are fast, internal, and reliable. Email APIs (like SendGrid/AWS) are slow, external, and prone to rate-limiting or network timeouts. They must be decoupled using an Asynchronous Message Queue.
+
+### Revised Pseudocode (Event-Driven Architecture)
+```python
+function notify_all(student_ids: array, message: string):
+  # 1. Fast, internal DB operations (Batch Insert)
+  batch_save_to_db(student_ids, message)
+  
+  for student_id in student_ids:
+    # 2. Instantly push to connected clients via SSE
+    push_to_app(student_id, message) 
+    
+    # 3. Fire-and-forget: Send the email task to a Message Queue (e.g., RabbitMQ, Celery, SQS)
+    enqueue_task("email_queue", student_id, message)
+
+# This runs on separate Background Worker servers
+function process_email_queue_task(student_id: string, message: string):
+  try:
+    send_email(student_id, message)
+  except TemporaryAPIError:
+    # If the email API fails, push it back to the queue to try again later
+    retry_task_later()
+  except PermanentError:
+    # Send to a Dead Letter Queue for engineering review
+    log_to_dead_letter_queue(student_id, message)
+```
