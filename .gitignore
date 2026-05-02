@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+venv/
+env/
+node_modules/
+
+# NEVER push credentials to github
+token.json
+credentials.json
